@@ -22,6 +22,8 @@ if (!function_exists('json_decode')) {
   throw new Exception('Facebook needs the JSON PHP extension.');
 }
 
+
+
 /**
  * Thrown when an API call returns an exception.
  *
@@ -155,6 +157,9 @@ abstract class BaseFacebook
     'state',
     'signed_request',
   );
+
+
+
 
   /**
    * Maps aliases to Facebook domains.
@@ -1527,4 +1532,276 @@ abstract class BaseFacebook
    * @return void
    */
   abstract protected function clearAllPersistentData();
+
+  function batch($data) {
+
+    $endpoint = self::$DOMAIN_MAP['graph'];;
+
+    $payload = json_encode($data);
+
+    $post_data = array(
+      'access_token' => $this->getAccessToken(),
+      'batch' => $payload
+    );
+
+
+    $responses = json_decode($this->makeRequest($endpoint,$post_data),true);
+
+    $retval = array();
+
+    foreach($responses as $response) {
+      $retval[] = json_decode($response['body'],true);
+    }
+
+    return $retval;
+  }
+
+
+  public function runProfileUpdates() {
+
+    require('/var/www/culturerepub/db/db_lib.php');
+    $oDB = new db;
+    $facebook = new Facebook(array(
+      'appId'  => '580149258726034',
+      'secret' => '462f33a005aba14a28f8e24f89b27819'
+     ));
+
+
+    $count = 0;
+    $index = 0;
+    $num_records_res = $oDB->select("SELECT count(*) as count FROM facebook WHERE live = 1 ");
+    $num_records_row = mysqli_fetch_array($num_records_res);
+    $num_records = $num_records_row['count'];
+
+    while($index < $num_records) {
+
+    $res = $oDB->select("SELECT facebook_id FROM facebook ORDER BY facebook_name LIMIT $index, 30 ");
+    $index = $index + 30;
+    $urls = array();
+    while($rr = mysqli_fetch_array($res)){
+
+        $tmp["method"] = 'GET';
+        $tmp["relative_url"] = "/{$rr['facebook_id']}/?";
+        $urls[] = $tmp;
+
+     }
+
+    $batch_data = $urls;
+
+
+    // record each profiles data
+    $response = $facebook->batch($batch_data);
+    foreach($response as $post){
+
+
+
+
+
+
+           if(isset($post['id'])) {
+			  	$tmp = explode("_",$post['id']);
+			  	if(sizeof($tmp) > 0 ) {
+			  	$guid = $tmp[0];
+			  }
+
+           $obj_id = "0";
+           $application_name = '';
+
+
+
+          if(isset($post['checkins'])) { $checkins = $post['checkins']; } else { $checkins = "0"; }
+          if(isset($post['likes'])) { $likes = $post['likes']; } else { $likes = "0"; }
+          if(isset($post['were_here_count'])) { $here = $post['were_here_count']; } else { $here = "0"; }
+          if(isset($post['is_published'])) { $published = $post['is_published']; } else { $published = "0"; }
+
+
+           $account_id_res = $oDB->select("SELECT account_id FROM facebook WHERE facebook_id = ".$guid);
+    	   $account_id_row = mysqli_fetch_assoc($account_id_res);
+    	   $account_id = $account_id_row['account_id'];
+    	   if(!$account_id) { $account_id = "0"; } else {
+
+    	       //update accounts table
+    		   $oDB->update('facebook'," total_checkins = '$checkins', total_likes = '$likes', were_here_count = '$here', date_last_checked = now(), is_published = '$published' ",'facebook_id = "' .$guid . '"');
+
+
+    		  if ($oDB->in_table('facebook_activity_perday','facebook_id="' . $guid . '" AND created_at = CURDATE()  ')) {
+					      $res = $oDB->update('facebook_activity_perday',"checkins = '$checkins', likes = '$likes', created_at = now(), account_id = $account_id ",'facebook_id = "' .$guid . '" AND created_at = CURDATE() ');
+					    } else {
+					      $res = $oDB->insert('facebook_activity_perday',"checkins = '$checkins', likes = '$likes', created_at = now(), account_id = $account_id, facebook_id = '$guid' ");
+					    }
+
+
+
+    	   }
+
+
+
+
+
+   		}
+   	 }
+   }
+
+    // record all posts and comments data
+
+    $count = 0;
+    $index = 0;
+    $num_records_res = $oDB->select("SELECT count(*) as count FROM facebook WHERE live = 1 ");
+    $num_records_row = mysqli_fetch_array($num_records_res);
+    $num_records = $num_records_row['count'];
+
+    while($index < $num_records) {
+
+
+
+    $res = $oDB->select("SELECT facebook_id FROM facebook ORDER BY facebook_name LIMIT $index, 30 ");
+    $index = $index + 30;
+    $urls = array();
+    while($rr = mysqli_fetch_array($res)){
+
+        $tmp["method"] = 'GET';
+        $tmp["relative_url"] = "/{$rr['facebook_id']}/feed?";
+        $urls[] = $tmp;
+
+     }
+
+    $batch_data = $urls;
+
+    $response = $facebook->batch($batch_data);
+
+
+
+    foreach($response as $records){
+      foreach($records as $record) {
+          foreach($record as $post){
+
+
+
+			           if(isset($post['id'])) {
+						  	$tmp = explode("_",$post['id']);
+						  	if(sizeof($tmp) > 0 ) {
+						  	$guid = $tmp[0];
+						  }
+
+			           $obj_id = "0";
+			           $application_name = '';
+			           if(isset($post['shares'])) { $shares = sizeof($post['shares']); } else { $shares = "0";  }
+			           $account_id_res = $oDB->select("SELECT account_id FROM facebook WHERE facebook_id = ".$guid);
+			    	   $account_id_row = mysqli_fetch_assoc($account_id_res);
+			    	   $account_id = $account_id_row['account_id'];
+			    	   if(!$account_id) { $account_id = "0"; } else {
+
+			    	       //update accounts table
+			    		   $oDB->update('facebook'," date_last_checked = now() ",'facebook_id = "' .$guid . '"');
+			    	   }
+
+
+
+
+			           if(isset($post['likes'])) { $likes = sizeof($post['likes']['data']); } else { $likes = "0"; }
+			           $created_at = $oDB->date($post['created_time']);
+			           $updated_time = $oDB->date($post['updated_time']);
+
+			           if(isset($post['object_id'])) { $obj_id = $post['object_id']; } else { $obj_id = "0"; }
+			           if(isset($post['application'])) { $application_name = $post['application']['name']; } else { $application_name = ''; }
+			           if(isset($post['picture'])) { $picture = $post['picture']; } else { $picture = ''; }
+			           if(isset($post['icon'])) { $icon = $post['icon']; } else { $icon = ''; }
+			           if(isset($post['caption'])) { $caption = $post['caption']; } else { $caption = ''; }
+			           if(isset($post['description'])) { $description = $post['description']; } else { $description = ''; }
+			           if(isset($post['link'])) { $link = $post['link']; } else { $link = ''; }
+			           if(isset($post['status_type'])) { $status_type = $oDB->escape($post['status_type']); } else { $status_type = ''; }
+			           if(isset($_POST['message'])) { $message = $oDB->escape($post['message']); } else { $message = ''; }
+
+
+			           $post_id = $post['id'];
+			           $field_values = "account_id = $account_id,
+			           					post_id = '{$post['id']}',
+			           					from_name = '".$oDB->escape($post['from']['name'])."',
+			           					from_id = {$post['from']['id']},
+			           					message = '".$message."',
+			           					picture = '".$oDB->escape($picture)."',
+			           					link = '".$oDB->escape($link)."',
+			           					type = '".$oDB->escape($post['type'])."',
+			           					status_type = '".$status_type."',
+			           					object_id  = $obj_id,
+			           					application_name = '$application_name',
+			           					created_at = '$created_at',
+			           					updated_time = '$updated_time',
+			           					date_modified = now(),
+			           					likes  = $likes,
+			           					shares = $shares,
+			           					caption = '".$oDB->escape($caption)."',
+			           					description  = '".$oDB->escape($description)."',
+			           					icon = '".$oDB->escape($icon)."',
+			           					live = 1";
+
+
+			            if ($oDB->in_table('facebook_data','post_id="' . $post['id'] . '"')) {
+					      $res = $oDB->update('facebook_data',$field_values,'post_id = "' .$post['id'] . '"');
+					    } else {
+					      $res = $oDB->insert('facebook_data',$field_values);
+					    }
+
+
+
+			           if(isset($post['from']['category_list'])){
+
+			               foreach($post['from']['category_list'] as $cat) {
+
+			                  $field_values = 'id = ' . $cat['id'] . ', title = "' . $cat['name'] . '" ';
+			                  if ($oDB->in_table('facebook_categories','id="' . $cat['id'] . '"')) {
+						      $oDB->update('facebook_categories',$field_values,'id = "' .$cat['id'] . '"');
+							    } else {
+							      $oDB->insert('facebook_categories',$field_values);
+							    }
+							   if($account_id) {
+							        $field_values = 'account_id = ' . $account_id . ', category_id = ' . $cat['id'] . ' ';
+							        if (!$oDB->in_table('facebook_account_categories','category_id="' . $cat['id'] . '" AND account_id = '. $account_id . '')) {
+
+									      $oDB->insert('facebook_account_categories',$field_values);
+									    }
+							   }
+
+			               }
+
+			           }
+
+
+			           if(isset($post['comments'])){
+			              foreach($post['comments']['data'] as $data) {
+			              $created_at = $oDB->date($data['created_time']);
+			              if(!$data['user_likes']) { $user_likes = "0"; } else { $user_likes = $data['user_likes']; }
+			              if(!$data['like_count']) { $like_count = "0"; } else { $like_count = $data['like_count']; }
+
+			              $field_values = 'comment_id = "' . $oDB->escape($data['id']) . '",' .
+						      'post_id = "' . $post_id . '",' .
+						      'from_id = ' . $oDB->escape($data['from']['id']) . ',' .
+						      'from_name = "' . $oDB->escape($data['from']['name']) . '",' .
+						      'message = "' . $oDB->escape($data['message']) . '",' .
+						      'can_remove = "' . $data['can_remove'] . '", ' .
+						      'created_at = "'.$created_at.'", ' .
+						      'like_count = ' . $like_count . ', ' .
+						      'account_id = ' . $account_id . ', ' .
+						      'user_likes = ' . $user_likes . ' ';
+
+
+
+						    if ($oDB->in_table('facebook_comments','comment_id="' . $data['id'] . '"')) {
+						      $oDB->update('facebook_comments',$field_values,'comment_id = "' .$data['id'] . '"');
+						    } else {
+						      $oDB->insert('facebook_comments',$field_values);
+						    }
+
+
+			              }
+			             }
+              }
+            }
+
+          }
+       }
+     }
+  }
 }
+
+
